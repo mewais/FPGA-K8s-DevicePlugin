@@ -64,4 +64,10 @@ func main() {
 	// Start the OS watcher, this is basically a signal handler
 	log.Info("Starting OS watcher.")
 	sigs := newOSWatcher(syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+
+	// Get all the devices
+	log.Info("Getting Devices.")
+	devices, tenantDevices := getAllDevices()
+
+	// Start all
 }
