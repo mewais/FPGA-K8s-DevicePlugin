@@ -1,1 +1,2 @@
-utils/sidewinder-100-sample-device-tree.dtb
+utils/*.dtb
+utils/*.dtbo
