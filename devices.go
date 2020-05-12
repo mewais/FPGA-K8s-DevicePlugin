@@ -17,7 +17,15 @@
 package main
 
 import (
+	log "github.com/sirupsen/logrus"
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
+)
+
+const (
+	FREE      int = 0
+	USED      int = 1
+	BLOCKED   int = 2
+	UNHEALTHY int = 3
 )
 
 // FIXME: This var is all hypothetical. Change the numbers later
@@ -40,10 +48,107 @@ var tenants = map[string]map[string]int{
 
 type FPGADevice struct {
 	pluginapi.Device
+	// the status of an FPGA device
+	// 0 for free
+	// 1 for used
+	// 2 for blocked because of subdevice being used
+	// 3 for being unhealthy
+	status   int
 	children []*FPGATenantDevice
 }
 
 type FPGATenantDevice struct {
 	pluginapi.Device
+	// the status of an FPGA tenant device
+	// 0 for free
+	// 1 for used
+	// 2 for blocked because of parent being used
+	// 3 for being unhealthy
+	status int
 	parent *FPGADevice
+}
+
+func (device *FPGADevice) SetFree() {
+	device.status = FREE
+	device.Health = pluginapi.Healthy
+	// Also set our children to free
+	for _, child := range device.children {
+		child.status = FREE
+		child.Health = pluginapi.Healthy
+	}
+}
+
+func (device *FPGATenantDevice) SetFree() {
+	if device.parent.status == USED {
+		log.Fatal("Impossible case, shouldn't be able to change our status when our parent is being used")
+		return
+	}
+	device.status = FREE
+	device.Health = pluginapi.Healthy
+	// If all other children of our parent are free
+	// set the parent free too
+	free := true
+	health := pluginapi.Healthy
+	for _, child := range device.parent.children {
+		if child == device {
+			continue
+		}
+		if child.status != FREE {
+			free = false
+		}
+		if child.Health != pluginapi.Healthy {
+			health = pluginapi.Unhealthy
+		}
+	}
+	if free {
+		device.parent.status = FREE
+		device.parent.Health = health
+	}
+}
+
+func (device *FPGADevice) SetUsed() {
+	device.status = USED
+	device.Health = pluginapi.Healthy
+	// set children to blocked
+	for _, child := range device.children {
+		child.status = BLOCKED
+		child.Health = pluginapi.Healthy
+	}
+}
+
+func (device *FPGATenantDevice) SetUsed() {
+	if device.parent.status == USED {
+		log.Fatal("Impossible case, shouldn't be able to change our status when our parent is being used")
+		return
+	}
+	device.status = USED
+	device.Health = pluginapi.Healthy
+	device.parent.status = BLOCKED
+	device.parent.Health = pluginapi.Healthy
+}
+
+func (device *FPGADevice) SetUnhealthy() {
+	device.status = UNHEALTHY
+	device.Health = pluginapi.Unhealthy
+	for _, child := range device.children {
+		child.status = UNHEALTHY
+		child.Health = pluginapi.Unhealthy
+	}
+}
+
+func (device *FPGATenantDevice) SetUnhealthy() {
+	device.status = UNHEALTHY
+	device.Health = pluginapi.Unhealthy
+	device.parent.status = UNHEALTHY
+	device.parent.Health = pluginapi.Unhealthy
+}
+
+func (device *FPGADevice) Reset() error {
+	// TODO: Reset the FPGA by installing an empty bitstream
+	return nil
+}
+
+func (device *FPGATenantDevice) Reset() error {
+	// TODO: Reset the FPGA PR area by installing an empty bitstream
+	return nil
 }

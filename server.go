@@ -17,11 +17,17 @@
 package main
 
 import (
+	"errors"
 	"io/ioutil"
+	"net"
 	"os"
+	"path"
 	"strconv"
+	"sync"
+	"time"
 
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
 )
@@ -52,15 +58,12 @@ type FPGADevicePlugin struct {
 	server *grpc.Server
 	// The list of IDs of FPGA devices of this type in the system
 	devices []*FPGADevice
-	// the status of every FPGA device of this type in the system
-	// 0 for free
-	// 1 for used
-	// 2 for blocked because of subdevice being used
-	status []int
 	// Number of devices
 	deviceCount int
 	// Pointers to the child tenant device plugins
 	childPlugins []*FPGATenantDevicePlugin
+	// Mutex
+	mutex sync.Mutex
 }
 
 type FPGATenantDevicePlugin struct {
@@ -76,15 +79,26 @@ type FPGATenantDevicePlugin struct {
 	server *grpc.Server
 	// The id of this tenant in its parent FPGA device.
 	devices []*FPGATenantDevice
-	// the status of every FPGA tenant of this type in the system
-	// 0 for free
-	// 1 for used
-	// 2 for blocked because of parent being used
-	status []int
 	// Number of devices
 	deviceCount int
 	// Pointer to the parent device plugin
 	parentPlugin *FPGADevicePlugin
+}
+
+func (plugin *FPGADevicePlugin) fullName() string {
+	return join_strings(plugin.vendorName, "/", plugin.boardName)
+}
+
+func (plugin *FPGATenantDevicePlugin) fullName() string {
+	return join_strings(plugin.vendorName, "/", plugin.boardName, "-", plugin.tenantName)
+}
+
+func (plugin *FPGADevicePlugin) socketName() string {
+	return join_strings(pluginapi.DevicePluginPath, plugin.boardName, ".sock")
+}
+
+func (plugin *FPGATenantDevicePlugin) socketName() string {
+	return join_strings(pluginapi.DevicePluginPath, plugin.boardName, "-", plugin.tenantName, ".sock")
 }
 
 // FPGA Plugin Constructor, this should take its inputs from system files.
@@ -94,7 +108,6 @@ func NewFPGADevicePlugin(vendorName string, boardName string) *FPGADevicePlugin 
 		boardName:    boardName,
 		server:       nil,
 		devices:      []*FPGADevice{},
-		status:       []int{},
 		deviceCount:  0,
 		childPlugins: []*FPGATenantDevicePlugin{},
 	}
@@ -112,7 +125,6 @@ func NewFPGATenantDevicePlugins(parentPlugin *FPGADevicePlugin) []*FPGATenantDev
 			tenantName:   tenantName,
 			server:       nil,
 			devices:      []*FPGATenantDevice{},
-			status:       []int{},
 			deviceCount:  0,
 			parentPlugin: parentPlugin,
 		}
@@ -127,9 +139,9 @@ func addDevice(parentPlugin *FPGADevicePlugin) {
 	newFPGADevice := &FPGADevice{}
 	newFPGADevice.ID = strconv.Itoa(parentPlugin.deviceCount)
 	newFPGADevice.Health = pluginapi.Healthy
+	newFPGADevice.status = FREE
 	// Add it to plugin
 	parentPlugin.devices = append(parentPlugin.devices, newFPGADevice)
-	parentPlugin.status = append(parentPlugin.status, 0)
 	parentPlugin.deviceCount++
 	// Create FPGA tenant devices
 	for _, childPlugin := range parentPlugin.childPlugins {
@@ -138,11 +150,11 @@ func addDevice(parentPlugin *FPGADevicePlugin) {
 			newTenantDevice := &FPGATenantDevice{}
 			newTenantDevice.ID = join_strings(newFPGADevice.ID, strconv.Itoa(childPlugin.deviceCount))
 			newTenantDevice.Health = pluginapi.Healthy
+			newTenantDevice.status = FREE
 			newTenantDevice.parent = newFPGADevice
 			newFPGADevice.children = append(newFPGADevice.children, newTenantDevice)
 			// Add it to plugin
 			childPlugin.devices = append(childPlugin.devices, newTenantDevice)
-			childPlugin.status = append(childPlugin.status, 0)
 			childPlugin.deviceCount++
 		}
 	}
@@ -203,4 +215,317 @@ func getAllDevices() ([]*FPGADevicePlugin, []*FPGATenantDevicePlugin) {
 	}
 	// TODO: Check for PCIe connected FPGAs
 	return devicePlugins, tenantDevicePlugins
+}
+
+func (plugin *FPGADevicePlugin) Start() error {
+	plugin.mutex.Lock()
+
+	// Create the server
+	plugin.server = grpc.NewServer([]grpc.ServerOption{}...)
+	// Register the server
+	sock, err := net.Listen("unix", plugin.socketName())
+	if err != nil {
+		plugin.server = nil
+		log.WithFields(log.Fields{
+			"Socket": plugin.socketName(),
+			"Error":  err,
+		}).Error("Cannot listen on socket.")
+		return err
+	}
+	pluginapi.RegisterDevicePluginServer(plugin.server, plugin)
+	// Start the server and make sure no errors
+	go func() {
+		lastCrashTime := time.Now()
+		restartCount := 0
+		for {
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+			}).Info("Starting GRPC server")
+			err := plugin.server.Serve(sock)
+			if err == nil {
+				break
+			}
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+				"Error":    err,
+			}).Error("GRPC server crashed")
+
+			// restart if it has not been too often
+			// i.e. if server has crashed more than 5 times and it didn't last more than one hour each time
+			if restartCount > 5 {
+				log.WithFields(log.Fields{
+					"Resource": plugin.fullName(),
+					"Error":    err,
+				}).Error("GRPC server has repeatedly crashed recently. Quitting")
+				break
+			}
+			timeSinceLastCrash := time.Since(lastCrashTime).Seconds()
+			lastCrashTime = time.Now()
+			if timeSinceLastCrash > 3600 {
+				// it has been one hour since the last crash.. reset the count
+				// to reflect on the frequency
+				restartCount = 1
+			} else {
+				restartCount += 1
+			}
+		}
+	}()
+
+	// Wait for server to start by launching a blocking connexion
+	conn, err := dial(plugin.socketName(), 5*time.Second)
+	if err != nil {
+		plugin.server = nil
+		log.WithFields(log.Fields{
+			"Socket": plugin.socketName(),
+			"Error":  err,
+		}).Error("Cannot dial socket.")
+		return err
+	}
+	conn.Close()
+
+	// Register our server with kubelet
+	conn, err = dial(pluginapi.KubeletSocket, 5*time.Second)
+	if err != nil {
+		plugin.server = nil
+		log.WithFields(log.Fields{
+			"Socket": plugin.socketName(),
+			"Error":  err,
+		}).Error("Cannot dial socket.")
+		return err
+	}
+	defer conn.Close()
+
+	client := pluginapi.NewRegistrationClient(conn)
+	reqt := &pluginapi.RegisterRequest{
+		Version:      pluginapi.Version,
+		Endpoint:     path.Base(plugin.socketName()),
+		ResourceName: plugin.fullName(),
+	}
+
+	_, err = client.Register(context.Background(), reqt)
+	if err != nil {
+		plugin.server = nil
+		log.WithFields(log.Fields{
+			"Error": err,
+		}).Error("Cannot register client.")
+		return err
+	}
+
+	log.WithFields(log.Fields{
+		"Resource": plugin.fullName(),
+	}).Info("Successfully registered device plugin")
+
+	// Register children device plugins now
+	for _, childPlugin := range plugin.childPlugins {
+		childPlugin.Start()
+	}
+	plugin.mutex.Unlock()
+
+	// TODO: start the fixer thread.
+	return nil
+}
+
+func (plugin *FPGATenantDevicePlugin) Start() error {
+	// Create the server
+	plugin.server = grpc.NewServer([]grpc.ServerOption{}...)
+	// Register the server
+	sock, err := net.Listen("unix", plugin.socketName())
+	if err != nil {
+		plugin.server = nil
+		log.WithFields(log.Fields{
+			"Socket": plugin.socketName(),
+			"Error":  err,
+		}).Error("Cannot listen on socket.")
+		return err
+	}
+	pluginapi.RegisterDevicePluginServer(plugin.server, plugin)
+	// Start the server and make sure no errors
+	go func() {
+		lastCrashTime := time.Now()
+		restartCount := 0
+		for {
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+			}).Info("Starting GRPC server")
+			err := plugin.server.Serve(sock)
+			if err == nil {
+				break
+			}
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+				"Error":    err,
+			}).Error("GRPC server crashed")
+
+			// restart if it has not been too often
+			// i.e. if server has crashed more than 5 times and it didn't last more than one hour each time
+			if restartCount > 5 {
+				log.WithFields(log.Fields{
+					"Resource": plugin.fullName(),
+					"Error":    err,
+				}).Error("GRPC server has repeatedly crashed recently. Quitting")
+				break
+			}
+			timeSinceLastCrash := time.Since(lastCrashTime).Seconds()
+			lastCrashTime = time.Now()
+			if timeSinceLastCrash > 3600 {
+				// it has been one hour since the last crash.. reset the count
+				// to reflect on the frequency
+				restartCount = 1
+			} else {
+				restartCount += 1
+			}
+		}
+	}()
+
+	// Wait for server to start by launching a blocking connexion
+	conn, err := dial(plugin.socketName(), 5*time.Second)
+	if err != nil {
+		plugin.server = nil
+		log.WithFields(log.Fields{
+			"Socket": plugin.socketName(),
+			"Error":  err,
+		}).Error("Cannot dial socket.")
+		return err
+	}
+	conn.Close()
+
+	// Register our server with kubelet
+	conn, err = dial(pluginapi.KubeletSocket, 5*time.Second)
+	if err != nil {
+		plugin.server = nil
+		log.WithFields(log.Fields{
+			"Socket": plugin.socketName(),
+			"Error":  err,
+		}).Error("Cannot dial socket.")
+		return err
+	}
+	defer conn.Close()
+
+	client := pluginapi.NewRegistrationClient(conn)
+	reqt := &pluginapi.RegisterRequest{
+		Version:      pluginapi.Version,
+		Endpoint:     path.Base(plugin.socketName()),
+		ResourceName: plugin.fullName(),
+	}
+
+	_, err = client.Register(context.Background(), reqt)
+	if err != nil {
+		plugin.server = nil
+		log.WithFields(log.Fields{
+			"Error": err,
+		}).Error("Cannot register client.")
+		return err
+	}
+
+	log.WithFields(log.Fields{
+		"Resource": plugin.fullName(),
+	}).Info("Successfully registered device plugin")
+
+	return nil
+}
+
+// Stop the gRPC server.
+func (plugin *FPGADevicePlugin) Stop() error {
+	// Lock the mutex
+	plugin.mutex.Lock()
+
+	var err error
+	err = nil
+	if plugin == nil {
+		log.Fatal("Attempting to stop a non existing plugin server")
+		err = errors.New("Attempting to stop a non existing plugin server")
+		return err
+	}
+	if plugin.server == nil {
+		return nil
+	}
+	log.WithFields(log.Fields{
+		"Resource": plugin.fullName(),
+		"Socket":   plugin.socketName(),
+	}).Info("Stopping plugin server.")
+	// Stop the server
+	plugin.server.Stop()
+	plugin.server = nil
+	// Remove the socket
+	if err = os.Remove(plugin.socketName()); err != nil && !os.IsNotExist(err) {
+		log.WithFields(log.Fields{
+			"Socket": plugin.socketName(),
+			"Error":  err,
+		}).Error("Failed to remove socket")
+	} else {
+		err = nil
+	}
+	// Stop tenant plugin servers
+	for _, childPlugin := range plugin.childPlugins {
+		childPlugin.Stop()
+	}
+	// Stop all FPGAs and reset their status
+	for _, device := range plugin.devices {
+		if device.status == USED || device.status == BLOCKED {
+			err = device.Reset()
+			if err != nil {
+				device.SetUnhealthy()
+				log.WithFields(log.Fields{
+					"ID":    device.ID,
+					"Error": err,
+				}).Error("Failed to clear FPGA device. Device is now unhealthy")
+			} else {
+				device.SetFree()
+			}
+		}
+		// UNHEALTHY devices remain unhealthy
+		// FREE devices require no action
+	}
+
+	// Unlock the mutex
+	plugin.mutex.Unlock()
+	return err
+}
+
+// Stop the gRPC server.
+func (plugin *FPGATenantDevicePlugin) Stop() error {
+	var err error
+	err = nil
+	if plugin == nil {
+		log.Fatal("Attempting to stop a non existing plugin server")
+		err = errors.New("Attempting to stop a non existing plugin server")
+		return err
+	}
+	if plugin.server == nil {
+		return nil
+	}
+	log.WithFields(log.Fields{
+		"Resource": plugin.fullName(),
+		"Socket":   plugin.socketName(),
+	}).Info("Stopping plugin server.")
+	// Stop the server
+	plugin.server.Stop()
+	plugin.server = nil
+	// Remove the socket
+	if err = os.Remove(plugin.socketName()); err != nil && !os.IsNotExist(err) {
+		log.WithFields(log.Fields{
+			"Socket": plugin.socketName(),
+			"Error":  err,
+		}).Error("Failed to remove socket")
+	} else {
+		err = nil
+	}
+	// We don't need to stop PR tenants, parent already wiped FPGAs clean
+	return err
+}
+
+// dial establishes the gRPC communication with the registered device plugin.
+func dial(unixSocketPath string, timeout time.Duration) (*grpc.ClientConn, error) {
+	c, err := grpc.Dial(unixSocketPath, grpc.WithInsecure(), grpc.WithBlock(),
+		grpc.WithTimeout(timeout),
+		grpc.WithDialer(func(addr string, timeout time.Duration) (net.Conn, error) {
+			return net.DialTimeout("unix", addr, timeout)
+		}),
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return c, nil
 }

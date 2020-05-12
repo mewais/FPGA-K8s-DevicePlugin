@@ -67,7 +67,7 @@ func main() {
 
 	// Get all the devices
 	log.Info("Getting Devices.")
-	devices, tenantDevices := getAllDevices()
+	plugins, tenantPlugins := getAllDevices()
 
 	// Start all
 }
