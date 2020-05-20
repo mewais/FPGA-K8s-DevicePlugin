@@ -1,0 +1,5 @@
+FROM amd64/alpine:3.11
+
+WORKDIR /work
+COPY FPGA-K8s-DevicePlugin-amd64 .
+CMD /work/FPGA-K8s-DevicePlugin-amd64

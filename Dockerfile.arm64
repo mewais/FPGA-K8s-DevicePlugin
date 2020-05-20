@@ -1,0 +1,5 @@
+FROM arm64v8/alpine:3.11
+
+WORKDIR /work
+COPY FPGA-K8s-DevicePlugin-arm64 .
+CMD /work/FPGA-K8s-DevicePlugin-arm64
