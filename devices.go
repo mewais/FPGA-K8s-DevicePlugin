@@ -17,8 +17,8 @@
 package main
 
 import (
+	pluginapi "github.com/mewais/FPGA-K8s-DevicePlugin/v1beta1"
 	log "github.com/sirupsen/logrus"
-	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
 )
 
 const (

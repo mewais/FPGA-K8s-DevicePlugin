@@ -18,6 +18,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"net"
 	"os"
@@ -26,10 +27,10 @@ import (
 	"sync"
 	"time"
 
+	pluginapi "github.com/mewais/FPGA-K8s-DevicePlugin/v1beta1"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
-	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
 )
 
 // The hierarchy of this is a bit weird. We have `Device Plugins`, each plugin
@@ -63,7 +64,7 @@ type FPGADevicePlugin struct {
 	// Pointers to the child tenant device plugins
 	childPlugins []*FPGATenantDevicePlugin
 	// Mutex
-	mutex sync.Mutex
+	mutex sync.RWMutex
 }
 
 type FPGATenantDevicePlugin struct {
@@ -137,7 +138,7 @@ func NewFPGATenantDevicePlugins(parentPlugin *FPGADevicePlugin) []*FPGATenantDev
 func addDevice(parentPlugin *FPGADevicePlugin) {
 	// Create FPGA device
 	newFPGADevice := &FPGADevice{}
-	newFPGADevice.ID = strconv.Itoa(parentPlugin.deviceCount)
+	newFPGADevice.ID = join_strings(parentPlugin.fullName(), strconv.Itoa(parentPlugin.deviceCount))
 	newFPGADevice.Health = pluginapi.Healthy
 	newFPGADevice.status = FREE
 	// Add it to plugin
@@ -215,6 +216,24 @@ func getAllDevices() ([]*FPGADevicePlugin, []*FPGATenantDevicePlugin) {
 	}
 	// TODO: Check for PCIe connected FPGAs
 	return devicePlugins, tenantDevicePlugins
+}
+
+func (plugin *FPGADevicePlugin) deviceExists(id string) (bool, int) {
+	for index, device := range plugin.devices {
+		if device.ID == id {
+			return true, index
+		}
+	}
+	return false, -1
+}
+
+func (plugin *FPGATenantDevicePlugin) deviceExists(id string) (bool, int) {
+	for index, device := range plugin.devices {
+		if device.ID == id {
+			return true, index
+		}
+	}
+	return false, -1
 }
 
 func (plugin *FPGADevicePlugin) Start() error {
@@ -300,6 +319,11 @@ func (plugin *FPGADevicePlugin) Start() error {
 		Version:      pluginapi.Version,
 		Endpoint:     path.Base(plugin.socketName()),
 		ResourceName: plugin.fullName(),
+		Options: &pluginapi.DevicePluginOptions{
+			PreStartRequired:   true,
+			PostStopRequired:   true,
+			DeallocateRequired: true,
+		},
 	}
 
 	_, err = client.Register(context.Background(), reqt)
@@ -528,4 +552,120 @@ func dial(unixSocketPath string, timeout time.Duration) (*grpc.ClientConn, error
 	}
 
 	return c, nil
+}
+
+// Allocate entire FPGAs, disabling partial FPGA tenancy in the process.
+func (plugin *FPGADevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
+	plugin.mutex.Lock()
+	responses := pluginapi.AllocateResponse{}
+	for _, req := range reqs.ContainerRequests {
+		log.WithFields(log.Fields{
+			"Resource": plugin.fullName(),
+			"IDs":      req.DevicesIDs,
+		}).Info("FPGAs requested for allocation")
+		for _, id := range req.DevicesIDs {
+			exists, index := plugin.deviceExists(id)
+			if !exists {
+				log.WithFields(log.Fields{
+					"Resource": plugin.fullName(),
+					"ID":       id,
+				}).Error("Invalid allocation request. Resource doesn't exist")
+				plugin.mutex.Unlock()
+				return nil, fmt.Errorf("invalid allocation request for unavailable resource '%s': unknown device: %s", plugin.fullName(), id)
+			}
+			if plugin.devices[index].status != FREE {
+				log.WithFields(log.Fields{
+					"Resource": plugin.fullName(),
+					"ID":       id,
+					"Status":   plugin.devices[index].status,
+				}).Error("Invalid allocation request. Resource is busy")
+				plugin.mutex.Unlock()
+				return nil, fmt.Errorf("invalid allocation request for busy resource '%s': unknown device: %s", plugin.fullName(), id)
+			}
+		}
+
+		response := pluginapi.ContainerAllocateResponse{
+			// TODO: Fill this up
+		}
+
+		responses.ContainerResponses = append(responses.ContainerResponses, &response)
+	}
+
+	// If we are here, it means the request didn't have any errors, we can start killing off the FPGA tenants to
+	// be able to serve FPGAs.
+	for _, req := range reqs.ContainerRequests {
+		for _, id := range req.DevicesIDs {
+			exists, index := plugin.deviceExists(id)
+			if !exists {
+				log.WithFields(log.Fields{
+					"Resource": plugin.fullName(),
+					"ID":       id,
+				}).Fatal("Possible race condition, device should exist")
+				plugin.mutex.Unlock()
+				os.Exit(2)
+			}
+			plugin.devices[index].SetUsed()
+		}
+	}
+
+	plugin.mutex.Unlock()
+	return &responses, nil
+}
+
+// Allocate FPGA tenants, disabling entire FPGA allocation in the process.
+func (plugin *FPGATenantDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
+	plugin.parentPlugin.mutex.Lock()
+	responses := pluginapi.AllocateResponse{}
+	for _, req := range reqs.ContainerRequests {
+		log.WithFields(log.Fields{
+			"Resource": plugin.fullName(),
+			"IDs":      req.DevicesIDs,
+		}).Info("FPGAs requested for allocation")
+		for _, id := range req.DevicesIDs {
+			exists, index := plugin.deviceExists(id)
+			if !exists {
+				log.WithFields(log.Fields{
+					"Resource": plugin.fullName(),
+					"ID":       id,
+				}).Error("Invalid allocation request. Resource doesn't exist")
+				plugin.parentPlugin.mutex.Unlock()
+				return nil, fmt.Errorf("invalid allocation request for unavailable resource '%s': unknown device: %s", plugin.fullName(), id)
+			}
+			if plugin.devices[index].status != FREE {
+				log.WithFields(log.Fields{
+					"Resource": plugin.fullName(),
+					"ID":       id,
+					"Status":   plugin.devices[index].status,
+				}).Error("Invalid allocation request. Resource is busy")
+				plugin.parentPlugin.mutex.Unlock()
+				return nil, fmt.Errorf("invalid allocation request for busy resource '%s': unknown device: %s", plugin.fullName(), id)
+			}
+		}
+
+		response := pluginapi.ContainerAllocateResponse{
+			// TODO: Fill this up
+		}
+
+		responses.ContainerResponses = append(responses.ContainerResponses, &response)
+	}
+
+	// If we are here, it means the request didn't have any errors, we can start killing off the FPGA tenants to
+	// be able to serve FPGAs.
+	for _, req := range reqs.ContainerRequests {
+		for _, id := range req.DevicesIDs {
+			exists, index := plugin.deviceExists(id)
+			if !exists {
+				log.WithFields(log.Fields{
+					"Resource": plugin.fullName(),
+					"ID":       id,
+				}).Fatal("Possible race condition, device should exist")
+				plugin.parentPlugin.mutex.Unlock()
+				os.Exit(2)
+			}
+			plugin.devices[index].SetUsed()
+		}
+	}
+
+	plugin.parentPlugin.mutex.Unlock()
+	return &responses, nil
 }
