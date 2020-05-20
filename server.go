@@ -63,6 +63,8 @@ type FPGADevicePlugin struct {
 	deviceCount int
 	// Pointers to the child tenant device plugins
 	childPlugins []*FPGATenantDevicePlugin
+	// old list of available devices, used by ListAndWatch
+	oldDevices []*pluginapi.Device
 	// Mutex
 	mutex sync.RWMutex
 }
@@ -84,6 +86,8 @@ type FPGATenantDevicePlugin struct {
 	deviceCount int
 	// Pointer to the parent device plugin
 	parentPlugin *FPGADevicePlugin
+	// old list of available devices, used by ListAndWatch
+	oldDevices []*pluginapi.Device
 }
 
 func (plugin *FPGADevicePlugin) fullName() string {
@@ -234,6 +238,44 @@ func (plugin *FPGATenantDevicePlugin) deviceExists(id string) (bool, int) {
 		}
 	}
 	return false, -1
+}
+
+func (plugin *FPGADevicePlugin) availableDevices() []*pluginapi.Device {
+	var devices []*pluginapi.Device
+	for _, device := range plugin.devices {
+		if device.status == BLOCKED {
+			continue
+		}
+		devices = append(devices, &device.Device)
+	}
+	return devices
+}
+
+func (plugin *FPGATenantDevicePlugin) availableDevices() []*pluginapi.Device {
+	var devices []*pluginapi.Device
+	for _, device := range plugin.devices {
+		if device.status == BLOCKED {
+			continue
+		}
+		devices = append(devices, &device.Device)
+	}
+	return devices
+}
+
+func (plugin *FPGADevicePlugin) GetDevicePluginOptions(context.Context, *pluginapi.Empty) (*pluginapi.DevicePluginOptions, error) {
+	return &pluginapi.DevicePluginOptions{
+		PreStartRequired:   true,
+		PostStopRequired:   true,
+		DeallocateRequired: true,
+	}, nil
+}
+
+func (plugin *FPGATenantDevicePlugin) GetDevicePluginOptions(context.Context, *pluginapi.Empty) (*pluginapi.DevicePluginOptions, error) {
+	return &pluginapi.DevicePluginOptions{
+		PreStartRequired:   true,
+		PostStopRequired:   true,
+		DeallocateRequired: true,
+	}, nil
 }
 
 func (plugin *FPGADevicePlugin) Start() error {
@@ -430,6 +472,11 @@ func (plugin *FPGATenantDevicePlugin) Start() error {
 		Version:      pluginapi.Version,
 		Endpoint:     path.Base(plugin.socketName()),
 		ResourceName: plugin.fullName(),
+		Options: &pluginapi.DevicePluginOptions{
+			PreStartRequired:   true,
+			PostStopRequired:   true,
+			DeallocateRequired: true,
+		},
 	}
 
 	_, err = client.Register(context.Background(), reqt)
@@ -845,4 +892,36 @@ func (plugin *FPGATenantDevicePlugin) Deallocate(ctx context.Context, reqs *plug
 
 	plugin.parentPlugin.mutex.Unlock()
 	return nil, nil
+}
+
+func (plugin *FPGADevicePlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListAndWatchServer) error {
+	for {
+		// Loop forever and check
+		plugin.mutex.RLock()
+		availableDevices := plugin.availableDevices()
+		// If the list of available devices has changed, send a message.
+		if !check_array_equality(availableDevices, plugin.oldDevices) {
+			s.Send(&pluginapi.ListAndWatchResponse{Devices: availableDevices})
+			// and update old list
+			plugin.oldDevices = availableDevices
+		}
+		plugin.mutex.RUnlock()
+	}
+	return nil
+}
+
+func (plugin *FPGATenantDevicePlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListAndWatchServer) error {
+	for {
+		// Loop forever and check
+		plugin.parentPlugin.mutex.RLock()
+		availableDevices := plugin.availableDevices()
+		// If the list of available devices has changed, send a message.
+		if !check_array_equality(availableDevices, plugin.oldDevices) {
+			s.Send(&pluginapi.ListAndWatchResponse{Devices: availableDevices})
+			// and update old list
+			plugin.oldDevices = availableDevices
+		}
+		plugin.parentPlugin.mutex.RUnlock()
+	}
+	return nil
 }

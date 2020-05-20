@@ -16,10 +16,33 @@
 
 package main
 
+import pluginapi "github.com/mewais/FPGA-K8s-DevicePlugin/v1beta1"
+
 func join_strings(strs ...string) string {
 	var ret string
 	for _, str := range strs {
 		ret += str
 	}
 	return ret
+}
+
+// FIXME: Arrays are not that big for now, but we should improve
+// this
+func check_array_equality(arr1, arr2 []*pluginapi.Device) bool {
+	if len(arr1) != len(arr2) {
+		return false
+	}
+	for _, element1 := range arr1 {
+		found := false
+		for _, element2 := range arr2 {
+			if element1 == element2 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
