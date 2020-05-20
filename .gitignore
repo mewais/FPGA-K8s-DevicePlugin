@@ -1,2 +1,3 @@
 utils/*.dtb
 utils/*.dtbo
+FPGA-K8s-DevicePlugin

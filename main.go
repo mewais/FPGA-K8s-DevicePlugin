@@ -21,6 +21,7 @@ import (
 	"os"
 	"syscall"
 
+	"github.com/fsnotify/fsnotify"
 	pluginapi "github.com/mewais/FPGA-K8s-DevicePlugin/v1beta1"
 	log "github.com/sirupsen/logrus"
 )
@@ -52,22 +53,71 @@ func main() {
 	// Start the filesystem watcher. This gets notified everytime
 	// a path is modified. TODO: Explain what this does
 	log.Info("Starting FS watcher.")
-	watcher, err := newFSWatcher(pluginapi.DevicePluginPath)
+	fsWatcher, err := newFSWatcher(pluginapi.DevicePluginPath)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"Error": err,
-		}).Error("Failed to created FS watcher.")
+			"Path":  pluginapi.DevicePluginPath,
+		}).Error("Failed to create FS watcher.")
 		os.Exit(1)
 	}
-	defer watcher.Close()
+	defer fsWatcher.Close()
 
 	// Start the OS watcher, this is basically a signal handler
 	log.Info("Starting OS watcher.")
-	sigs := newOSWatcher(syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	sigsWatcher := newOSWatcher(syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
 	// Get all the devices
 	log.Info("Getting Devices.")
-	plugins, tenantPlugins := getAllDevices()
+	plugins, _ := getAllDevices()
 
+Lifetime:
 	// Start all
+	for {
+		// Initial reset and start plugins
+		for _, plugin := range plugins {
+			err := plugin.Stop()
+			if err != nil {
+				// Stop will take care of printing the errors
+				// just cancel
+				continue
+			}
+			err = plugin.Start()
+			if err != nil {
+				// Start will take care of printing the errors
+				// just cancel
+				continue
+			}
+		}
+
+	PostInit:
+		// Remaining lifetime of plugins
+		for {
+			select {
+			// Check for kubelet restart
+			case event := <-fsWatcher.Events:
+				if event.Name == pluginapi.KubeletSocket && event.Op&fsnotify.Create == fsnotify.Create {
+					log.Info("Kubelet restarted, restarting")
+					break PostInit
+				}
+			// Check for filesystem errors
+			case err := <-fsWatcher.Errors:
+				log.WithFields(log.Fields{
+					"Error": err,
+				}).Info("FS Watcher Error")
+			// Check for signal interrupts
+			case signal := <-sigsWatcher:
+				switch signal {
+				case syscall.SIGHUP:
+					log.Info("Received SIGHUP, restarting.")
+					break PostInit
+				default:
+					log.WithFields(log.Fields{
+						"Signal": signal,
+					}).Info("Recieved interrupt, shutting down.")
+					break Lifetime
+				}
+			}
+		}
+	}
 }
