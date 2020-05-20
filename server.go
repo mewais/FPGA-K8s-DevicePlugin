@@ -785,3 +785,64 @@ func (plugin *FPGATenantDevicePlugin) PostStopContainer(ctx context.Context, req
 	plugin.parentPlugin.mutex.RUnlock()
 	return nil, nil
 }
+
+//	Deallocate entire FPGAs, enabling partial FPGA tenancy in the process.
+func (plugin *FPGADevicePlugin) Deallocate(ctx context.Context, reqs *pluginapi.DeallocateRequest) (*pluginapi.Empty, error) {
+	plugin.mutex.Lock()
+	for _, req := range reqs.ContainerRequests {
+		log.WithFields(log.Fields{
+			"Resource": plugin.fullName(),
+			"IDs":      req.DevicesIDs,
+		}).Info("FPGAs deallocation requested")
+		for _, id := range req.DevicesIDs {
+			exists, index := plugin.deviceExists(id)
+			if !exists {
+				log.WithFields(log.Fields{
+					"Resource": plugin.fullName(),
+					"ID":       id,
+				}).Error("Invalid deallocation request. Resource doesn't exist")
+			}
+			if plugin.devices[index].status != USED {
+				log.WithFields(log.Fields{
+					"Resource": plugin.fullName(),
+					"ID":       id,
+					"Status":   plugin.devices[index].status,
+				}).Error("Invalid deallocation request. Resource is not busy")
+			}
+			plugin.devices[index].SetFree()
+		}
+	}
+	plugin.mutex.Unlock()
+	return nil, nil
+}
+
+// Deallocate FPGA tenants, enabling entire FPGA allocation in the process.
+func (plugin *FPGATenantDevicePlugin) Deallocate(ctx context.Context, reqs *pluginapi.DeallocateRequest) (*pluginapi.Empty, error) {
+	plugin.parentPlugin.mutex.Lock()
+	for _, req := range reqs.ContainerRequests {
+		log.WithFields(log.Fields{
+			"Resource": plugin.fullName(),
+			"IDs":      req.DevicesIDs,
+		}).Info("FPGA tenants deallocation requested")
+		for _, id := range req.DevicesIDs {
+			exists, index := plugin.deviceExists(id)
+			if !exists {
+				log.WithFields(log.Fields{
+					"Resource": plugin.fullName(),
+					"ID":       id,
+				}).Error("Invalid deallocation request. Resource doesn't exist")
+			}
+			if plugin.devices[index].status != USED {
+				log.WithFields(log.Fields{
+					"Resource": plugin.fullName(),
+					"ID":       id,
+					"Status":   plugin.devices[index].status,
+				}).Error("Invalid deallocation request. Resource is not busy")
+			}
+			plugin.devices[index].SetFree()
+		}
+	}
+
+	plugin.parentPlugin.mutex.Unlock()
+	return nil, nil
+}
