@@ -620,7 +620,7 @@ func (plugin *FPGATenantDevicePlugin) Allocate(ctx context.Context, reqs *plugin
 		log.WithFields(log.Fields{
 			"Resource": plugin.fullName(),
 			"IDs":      req.DevicesIDs,
-		}).Info("FPGAs requested for allocation")
+		}).Info("FPGA tenants requested for allocation")
 		for _, id := range req.DevicesIDs {
 			exists, index := plugin.deviceExists(id)
 			if !exists {
@@ -668,4 +668,120 @@ func (plugin *FPGATenantDevicePlugin) Allocate(ctx context.Context, reqs *plugin
 
 	plugin.parentPlugin.mutex.Unlock()
 	return &responses, nil
+}
+
+func (plugin *FPGADevicePlugin) PreStartContainer(ctx context.Context, req *pluginapi.PreStartContainerRequest) (*pluginapi.PreStartContainerResponse, error) {
+	log.WithFields(log.Fields{
+		"Resource": plugin.fullName(),
+		"IDs":      req.DevicesIDs,
+	}).Info("FPGAs PreStartContainer Requested")
+	plugin.mutex.RLock()
+	for _, id := range req.DevicesIDs {
+		exists, index := plugin.deviceExists(id)
+		if !exists {
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+				"ID":       id,
+			}).Error("Invalid PreStartContainer request. Resource doesn't exist")
+			plugin.mutex.RUnlock()
+			return nil, fmt.Errorf("invalid PreStartContainer request for unavailable resource '%s': unknown device: %s", plugin.fullName(), id)
+		}
+		if plugin.devices[index].status != USED {
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+				"ID":       id,
+				"Status":   plugin.devices[index].status,
+			}).Error("Invalid PreStartContainer request. Resource is not used")
+			plugin.mutex.RUnlock()
+			return nil, fmt.Errorf("invalid PreStartContainer request for unused resource '%s': unknown device: %s", plugin.fullName(), id)
+		}
+		// TODO: Should reset and cleanup the FPGA here
+	}
+	plugin.mutex.RUnlock()
+	return &pluginapi.PreStartContainerResponse{}, nil
+}
+
+func (plugin *FPGATenantDevicePlugin) PreStartContainer(ctx context.Context, req *pluginapi.PreStartContainerRequest) (*pluginapi.PreStartContainerResponse, error) {
+	log.WithFields(log.Fields{
+		"Resource": plugin.fullName(),
+		"IDs":      req.DevicesIDs,
+	}).Info("FPGA tenants PreStartContainer Requested")
+	plugin.parentPlugin.mutex.RLock()
+	for _, id := range req.DevicesIDs {
+		exists, index := plugin.deviceExists(id)
+		if !exists {
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+				"ID":       id,
+			}).Error("Invalid PreStartContainer request. Resource doesn't exist")
+			plugin.parentPlugin.mutex.RUnlock()
+			return nil, fmt.Errorf("invalid PreStartContainer request for unavailable resource '%s': unknown device: %s", plugin.fullName(), id)
+		}
+		if plugin.devices[index].status != USED {
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+				"ID":       id,
+				"Status":   plugin.devices[index].status,
+			}).Error("Invalid PreStartContainer request. Resource is not used")
+			plugin.parentPlugin.mutex.RUnlock()
+			return nil, fmt.Errorf("invalid PreStartContainer request for unused resource '%s': unknown device: %s", plugin.fullName(), id)
+		}
+		// TODO: Should reset and cleanup the FPGA here
+	}
+	plugin.parentPlugin.mutex.RUnlock()
+	return &pluginapi.PreStartContainerResponse{}, nil
+}
+
+func (plugin *FPGADevicePlugin) PostStopContainer(ctx context.Context, req *pluginapi.PostStopContainerRequest) (*pluginapi.Empty, error) {
+	log.WithFields(log.Fields{
+		"Resource": plugin.fullName(),
+		"IDs":      req.DevicesIDs,
+	}).Info("FPGAs PostStopContainer Requested")
+	plugin.mutex.RLock()
+	for _, id := range req.DevicesIDs {
+		exists, index := plugin.deviceExists(id)
+		if !exists {
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+				"ID":       id,
+			}).Error("Invalid PostStopContainer request. Resource doesn't exist")
+		}
+		if plugin.devices[index].status != USED {
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+				"ID":       id,
+				"Status":   plugin.devices[index].status,
+			}).Error("Invalid PostStopContainer request. Resource is not used")
+		}
+		// TODO: Should reset and cleanup the FPGA here
+	}
+	plugin.mutex.RUnlock()
+	return nil, nil
+}
+
+func (plugin *FPGATenantDevicePlugin) PostStopContainer(ctx context.Context, req *pluginapi.PostStopContainerRequest) (*pluginapi.Empty, error) {
+	log.WithFields(log.Fields{
+		"Resource": plugin.fullName(),
+		"IDs":      req.DevicesIDs,
+	}).Info("FPGA tenants PostStopContainer Requested")
+	plugin.parentPlugin.mutex.RLock()
+	for _, id := range req.DevicesIDs {
+		exists, index := plugin.deviceExists(id)
+		if !exists {
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+				"ID":       id,
+			}).Error("Invalid PostStopContainer request. Resource doesn't exist")
+		}
+		if plugin.devices[index].status != USED {
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+				"ID":       id,
+				"Status":   plugin.devices[index].status,
+			}).Error("Invalid PostStopContainer request. Resource is not used")
+		}
+		// TODO: Should reset and cleanup the FPGA here
+	}
+	plugin.parentPlugin.mutex.RUnlock()
+	return nil, nil
 }
