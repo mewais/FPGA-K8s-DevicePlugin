@@ -142,9 +142,13 @@ func NewFPGATenantDevicePlugins(parentPlugin *FPGADevicePlugin) []*FPGATenantDev
 func addDevice(parentPlugin *FPGADevicePlugin) {
 	// Create FPGA device
 	newFPGADevice := &FPGADevice{}
-	newFPGADevice.ID = join_strings(parentPlugin.fullName(), strconv.Itoa(parentPlugin.deviceCount))
+	newFPGADevice.ID = join_strings(parentPlugin.fullName(), "-", strconv.Itoa(parentPlugin.deviceCount))
 	newFPGADevice.Health = pluginapi.Healthy
 	newFPGADevice.status = FREE
+	log.WithFields(log.Fields{
+		"Plugin": parentPlugin.fullName(),
+		"ID":     newFPGADevice.ID,
+	}).Info("Found device")
 	// Add it to plugin
 	parentPlugin.devices = append(parentPlugin.devices, newFPGADevice)
 	parentPlugin.deviceCount++
@@ -153,10 +157,14 @@ func addDevice(parentPlugin *FPGADevicePlugin) {
 		for i := 0; i < tenants[childPlugin.boardName][childPlugin.tenantName]; i++ {
 			// Create FPGA tenant device
 			newTenantDevice := &FPGATenantDevice{}
-			newTenantDevice.ID = join_strings(newFPGADevice.ID, strconv.Itoa(childPlugin.deviceCount))
+			newTenantDevice.ID = join_strings(newFPGADevice.ID, "-", strconv.Itoa(childPlugin.deviceCount))
 			newTenantDevice.Health = pluginapi.Healthy
 			newTenantDevice.status = FREE
 			newTenantDevice.parent = newFPGADevice
+			log.WithFields(log.Fields{
+				"Plugin": childPlugin.fullName(),
+				"ID":     newTenantDevice.ID,
+			}).Info("Found tenant device")
 			newFPGADevice.children = append(newFPGADevice.children, newTenantDevice)
 			// Add it to plugin
 			childPlugin.devices = append(childPlugin.devices, newTenantDevice)
@@ -188,20 +196,26 @@ func getAllDevices() ([]*FPGADevicePlugin, []*FPGATenantDevicePlugin) {
 	var tenantDevicePlugins []*FPGATenantDevicePlugin
 	// We expect SoC FPGAs info to be at `/proc/device-tree/fpga-full/`
 	// according to the sample device trees in `utils`.
-	if _, err := os.Stat("/proc/device-tree/fpga-full"); err == nil {
+	if _, err := os.Stat("/work/device-tree/fpga-full"); err == nil {
 		// FPGA exists, try getting the vendor and board info
-		dat1, err := ioutil.ReadFile("/proc/device-tree/vendor")
+		dat1, err := ioutil.ReadFile("/work/device-tree/vendor")
 		if err != nil {
-			log.Warn("Could not read FPGA Info. Did you install the device tree overlay?")
+			log.WithFields(log.Fields{
+				"Error": err,
+			}).Warn("Could not read FPGA Info. Did you install the device tree overlay?")
 			return devicePlugins, tenantDevicePlugins
 		}
-		dat2, err := ioutil.ReadFile("/proc/device-tree/board")
+		dat2, err := ioutil.ReadFile("/work/device-tree/board")
 		if err != nil {
-			log.Warn("Could not read FPGA Info. Did you install the device tree overlay?")
+			log.WithFields(log.Fields{
+				"Error": err,
+			}).Warn("Could not read FPGA Info. Did you install the device tree overlay?")
 			return devicePlugins, tenantDevicePlugins
 		}
 		vendorName := string(dat1)
+		vendorName = vendorName[:len(vendorName)-1]
 		boardName := string(dat2)
+		boardName = boardName[:len(boardName)-1]
 		// Now we can create the device plugin
 		// Note that in MPSoCs, there's typically one FPGA, so we don't need
 		// to check whether or not a device plugin has been created before.
@@ -210,13 +224,15 @@ func getAllDevices() ([]*FPGADevicePlugin, []*FPGATenantDevicePlugin) {
 		log.WithFields(log.Fields{
 			"Vendor": vendorName,
 			"Board":  boardName,
-		}).Info("Found MPSoC FPGA connected.")
+		}).Info("Found MPSoC FPGAs connected.")
 		// And the corresponding tenant device plugin
 		tenantDevicePlugins = append(tenantDevicePlugins, NewFPGATenantDevicePlugins(newDevicePlugin)...)
 		// Now we add the actual devices
 		addDevice(newDevicePlugin)
 	} else {
-		log.Info("No MPSoC FPGA found.")
+		log.WithFields(log.Fields{
+			"Error": err,
+		}).Info("No MPSoC FPGA found.")
 	}
 	// TODO: Check for PCIe connected FPGAs
 	return devicePlugins, tenantDevicePlugins
@@ -280,6 +296,10 @@ func (plugin *FPGATenantDevicePlugin) GetDevicePluginOptions(context.Context, *p
 
 func (plugin *FPGADevicePlugin) Start() error {
 	plugin.mutex.Lock()
+	log.WithFields(log.Fields{
+		"Resource": plugin.fullName(),
+		"Socket":   plugin.socketName(),
+	}).Info("Starting plugin server.")
 
 	// Create the server
 	plugin.server = grpc.NewServer([]grpc.ServerOption{}...)
@@ -392,6 +412,10 @@ func (plugin *FPGADevicePlugin) Start() error {
 }
 
 func (plugin *FPGATenantDevicePlugin) Start() error {
+	log.WithFields(log.Fields{
+		"Resource": plugin.fullName(),
+		"Socket":   plugin.socketName(),
+	}).Info("Starting plugin server.")
 	// Create the server
 	plugin.server = grpc.NewServer([]grpc.ServerOption{}...)
 	// Register the server
@@ -499,21 +523,23 @@ func (plugin *FPGATenantDevicePlugin) Start() error {
 func (plugin *FPGADevicePlugin) Stop() error {
 	// Lock the mutex
 	plugin.mutex.Lock()
-
+	log.WithFields(log.Fields{
+		"Resource": plugin.fullName(),
+		"Socket":   plugin.socketName(),
+	}).Info("Stopping plugin server.")
 	var err error
 	err = nil
 	if plugin == nil {
 		log.Fatal("Attempting to stop a non existing plugin server")
 		err = errors.New("Attempting to stop a non existing plugin server")
+		plugin.mutex.Unlock()
 		return err
 	}
 	if plugin.server == nil {
+		log.Info("Plugin already stopped")
+		plugin.mutex.Unlock()
 		return nil
 	}
-	log.WithFields(log.Fields{
-		"Resource": plugin.fullName(),
-		"Socket":   plugin.socketName(),
-	}).Info("Stopping plugin server.")
 	// Stop the server
 	plugin.server.Stop()
 	plugin.server = nil
@@ -555,6 +581,10 @@ func (plugin *FPGADevicePlugin) Stop() error {
 
 // Stop the gRPC server.
 func (plugin *FPGATenantDevicePlugin) Stop() error {
+	log.WithFields(log.Fields{
+		"Resource": plugin.fullName(),
+		"Socket":   plugin.socketName(),
+	}).Info("Stopping plugin server.")
 	var err error
 	err = nil
 	if plugin == nil {
@@ -563,12 +593,9 @@ func (plugin *FPGATenantDevicePlugin) Stop() error {
 		return err
 	}
 	if plugin.server == nil {
+		log.Info("Plugin already stopped")
 		return nil
 	}
-	log.WithFields(log.Fields{
-		"Resource": plugin.fullName(),
-		"Socket":   plugin.socketName(),
-	}).Info("Stopping plugin server.")
 	// Stop the server
 	plugin.server.Stop()
 	plugin.server = nil

@@ -49,7 +49,7 @@ spec:
           - name: device-plugin
             mountPath: /var/lib/kubelet/device-plugins
           - name: device-info
-            mountPath: /sys/firmware/devicetree/base
+            mountPath: /work/device-tree/
             readOnly: true
       volumes:
         - name: device-plugin

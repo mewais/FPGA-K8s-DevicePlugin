@@ -15,16 +15,17 @@
 # along with dogtag. If not, see <http://www.gnu.org/licenses/>.
 
 docker-multiarch: docker-amd64 docker-arm64
+	rm -rf ~/.docker/manifests/docker.io_uofthprc_fpga-k8s-deviceplugin-latest/
 	docker push uofthprc/fpga-k8s-deviceplugin:amd64
 	docker push uofthprc/fpga-k8s-deviceplugin:arm64
 	docker manifest create uofthprc/fpga-k8s-deviceplugin:latest --amend uofthprc/fpga-k8s-deviceplugin:amd64 --amend uofthprc/fpga-k8s-deviceplugin:arm64
 	docker manifest push uofthprc/fpga-k8s-deviceplugin:latest
 
-docker-amd64: FPGA-K8s-DevicePlugin-amd64
-	docker build -t uofthprc/fpga-k8s-deviceplugin:amd64 -f Dockerfile.amd64 .
+docker-amd64: Dockerfile.amd64 FPGA-K8s-DevicePlugin-amd64
+	docker build -t uofthprc/fpga-k8s-deviceplugin:amd64 -f $< .
 
-docker-arm64: FPGA-K8s-DevicePlugin-arm64
-	docker build -t uofthprc/fpga-k8s-deviceplugin:arm64 -f Dockerfile.arm64 .
+docker-arm64: Dockerfile.arm64 FPGA-K8s-DevicePlugin-arm64
+	docker build -t uofthprc/fpga-k8s-deviceplugin:arm64 -f $< .
 
 FPGA-K8s-DevicePlugin-amd64: main.go server.go utils.go watcher.go devices.go
 	env GOOS=linux GOARCH=amd64 go build -o $@

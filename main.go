@@ -78,12 +78,18 @@ Lifetime:
 		for _, plugin := range plugins {
 			err := plugin.Stop()
 			if err != nil {
+				log.WithFields(log.Fields{
+					"Error": err,
+				}).Debug("Plugin Stopping failed, skipping")
 				// Stop will take care of printing the errors
 				// just cancel
 				continue
 			}
 			err = plugin.Start()
 			if err != nil {
+				log.WithFields(log.Fields{
+					"Error": err,
+				}).Debug("Plugin Starting failed, skipping")
 				// Start will take care of printing the errors
 				// just cancel
 				continue
