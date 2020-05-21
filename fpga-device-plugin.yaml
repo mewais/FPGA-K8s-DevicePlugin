@@ -14,11 +14,18 @@
 # You should have received a copy of the GNU General Public License
 # along with dogtag. If not, see <http://www.gnu.org/licenses/>.
 
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: device-plugins
+  labels:
+    name: device-plugins
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: fpga-device-plugin-ds
-  namespace: kube-system
+  namespace: device-plugins
 spec:
   selector:
     matchLabels:
@@ -42,11 +49,12 @@ spec:
           - name: device-plugin
             mountPath: /var/lib/kubelet/device-plugins
           - name: device-info
-            mountPath: /proc/device-tree
+            mountPath: /sys/firmware/devicetree/base
+            readOnly: true
       volumes:
         - name: device-plugin
           hostPath:
             path: /var/lib/kubelet/device-plugins
         - name: device-info
           hostPath:
-            path: /proc/device-tree
+            path: /sys/firmware/devicetree/base
