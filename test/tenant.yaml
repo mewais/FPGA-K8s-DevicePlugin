@@ -1,0 +1,30 @@
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fpga-tenant-test-1
+spec:
+  containers:
+  - name: fpga-tenant-test-container-1
+    image: alpine:3.11
+    command: ["/bin/sh"]
+    args: ["-c", "sleep 180"]
+    resources:
+      limits:
+        fidus.com/sidewinder-100-tenant: 4
+  restartPolicy: Never
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fpga-tenant-test-2
+spec:
+  containers:
+  - name: fpga-tenant-test-container-2
+    image: alpine:3.11
+    command: ["/bin/sh"]
+    args: ["-c", "sleep 180"]
+    resources:
+      limits:
+        fidus.com/sidewinder-100-tenant: 4
+  restartPolicy: Never

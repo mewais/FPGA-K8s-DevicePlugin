@@ -931,6 +931,14 @@ func (plugin *FPGADevicePlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.Dev
 			s.Send(&pluginapi.ListAndWatchResponse{Devices: availableDevices})
 			// and update old list
 			plugin.oldDevices = availableDevices
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+			}).Debug("Change in available FPGA devices")
+			for _, device := range availableDevices {
+				log.WithFields(log.Fields{
+					"ID": device.ID,
+				}).Debug("Available FPGA device")
+			}
 		}
 		plugin.mutex.RUnlock()
 	}
@@ -947,6 +955,14 @@ func (plugin *FPGATenantDevicePlugin) ListAndWatch(e *pluginapi.Empty, s plugina
 			s.Send(&pluginapi.ListAndWatchResponse{Devices: availableDevices})
 			// and update old list
 			plugin.oldDevices = availableDevices
+			log.WithFields(log.Fields{
+				"Resource": plugin.fullName(),
+			}).Debug("Change in available FPGA tenant devices")
+			for _, device := range availableDevices {
+				log.WithFields(log.Fields{
+					"ID": device.ID,
+				}).Debug("Available FPGA tenant device")
+			}
 		}
 		plugin.parentPlugin.mutex.RUnlock()
 	}

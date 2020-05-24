@@ -71,10 +71,16 @@ type FPGATenantDevice struct {
 func (device *FPGADevice) SetFree() {
 	device.status = FREE
 	device.Health = pluginapi.Healthy
+	log.WithFields(log.Fields{
+		"ID": device.ID,
+	}).Info("FPGA device is now free")
 	// Also set our children to free
 	for _, child := range device.children {
 		child.status = FREE
 		child.Health = pluginapi.Healthy
+		log.WithFields(log.Fields{
+			"ID": child.ID,
+		}).Info("FPGA tenant device is now free")
 	}
 }
 
@@ -85,6 +91,9 @@ func (device *FPGATenantDevice) SetFree() {
 	}
 	device.status = FREE
 	device.Health = pluginapi.Healthy
+	log.WithFields(log.Fields{
+		"ID": device.ID,
+	}).Info("FPGA tenant device is now free")
 	// If all other children of our parent are free
 	// set the parent free too
 	free := true
@@ -103,16 +112,25 @@ func (device *FPGATenantDevice) SetFree() {
 	if free {
 		device.parent.status = FREE
 		device.parent.Health = health
+		log.WithFields(log.Fields{
+			"ID": device.parent.ID,
+		}).Info("FPGA device is now free")
 	}
 }
 
 func (device *FPGADevice) SetUsed() {
 	device.status = USED
 	device.Health = pluginapi.Healthy
+	log.WithFields(log.Fields{
+		"ID": device.ID,
+	}).Info("FPGA device is now used")
 	// set children to blocked
 	for _, child := range device.children {
 		child.status = BLOCKED
 		child.Health = pluginapi.Healthy
+		log.WithFields(log.Fields{
+			"ID": child.ID,
+		}).Info("FPGA tenant device is now blocked")
 	}
 }
 
@@ -123,8 +141,16 @@ func (device *FPGATenantDevice) SetUsed() {
 	}
 	device.status = USED
 	device.Health = pluginapi.Healthy
-	device.parent.status = BLOCKED
-	device.parent.Health = pluginapi.Healthy
+	log.WithFields(log.Fields{
+		"ID": device.ID,
+	}).Info("FPGA tenant device is now used")
+	if device.parent.status != BLOCKED {
+		device.parent.status = BLOCKED
+		device.parent.Health = pluginapi.Healthy
+		log.WithFields(log.Fields{
+			"ID": device.parent.ID,
+		}).Info("FPGA device is now blocked")
+	}
 }
 
 func (device *FPGADevice) SetUnhealthy() {

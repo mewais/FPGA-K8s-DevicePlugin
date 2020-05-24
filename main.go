@@ -121,6 +121,17 @@ Lifetime:
 					log.WithFields(log.Fields{
 						"Signal": signal,
 					}).Info("Recieved interrupt, shutting down.")
+					for _, plugin := range plugins {
+						err := plugin.Stop()
+						if err != nil {
+							log.WithFields(log.Fields{
+								"Error": err,
+							}).Debug("Plugin Stopping failed, skipping")
+							// Stop will take care of printing the errors
+							// just cancel
+							continue
+						}
+					}
 					break Lifetime
 				}
 			}
