@@ -407,7 +407,6 @@ func (plugin *FPGADevicePlugin) Start() error {
 	}
 	plugin.mutex.Unlock()
 
-	// TODO: start the fixer thread.
 	return nil
 }
 
@@ -633,6 +632,7 @@ func (plugin *FPGADevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Al
 	plugin.mutex.Lock()
 	responses := pluginapi.AllocateResponse{}
 	for _, req := range reqs.ContainerRequests {
+		var deviceSpecs []*pluginapi.DeviceSpec
 		log.WithFields(log.Fields{
 			"Resource": plugin.fullName(),
 			"IDs":      req.DevicesIDs,
@@ -656,10 +656,16 @@ func (plugin *FPGADevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Al
 				plugin.mutex.Unlock()
 				return nil, fmt.Errorf("invalid allocation request for busy resource '%s': unknown device: %s", plugin.fullName(), id)
 			}
+			deviceSpec := &pluginapi.DeviceSpec{
+				ContainerPath: "/sys/class/fpga_manager/fpga0",
+				HostPath:      "/sys/class/fpga_manager/fpga0",
+				Permissions:   "rw",
+			}
+			deviceSpecs = append(deviceSpecs, deviceSpec)
 		}
 
 		response := pluginapi.ContainerAllocateResponse{
-			// TODO: Fill this up
+			Devices: deviceSpecs,
 		}
 
 		responses.ContainerResponses = append(responses.ContainerResponses, &response)
