@@ -58,3 +58,5 @@ spec:
         - name: device-info
           hostPath:
             path: /sys/firmware/devicetree/base
+      nodeSelector:
+        kubernetes.io/arch: arm64

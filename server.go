@@ -632,7 +632,7 @@ func (plugin *FPGADevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Al
 	plugin.mutex.Lock()
 	responses := pluginapi.AllocateResponse{}
 	for _, req := range reqs.ContainerRequests {
-		var deviceSpecs []*pluginapi.DeviceSpec
+		var deviceMounts []*pluginapi.Mount
 		log.WithFields(log.Fields{
 			"Resource": plugin.fullName(),
 			"IDs":      req.DevicesIDs,
@@ -656,16 +656,16 @@ func (plugin *FPGADevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Al
 				plugin.mutex.Unlock()
 				return nil, fmt.Errorf("invalid allocation request for busy resource '%s': unknown device: %s", plugin.fullName(), id)
 			}
-			deviceSpec := &pluginapi.DeviceSpec{
-				ContainerPath: "/sys/class/fpga_manager/fpga0",
-				HostPath:      "/sys/class/fpga_manager/fpga0",
-				Permissions:   "rw",
+			deviceMount := &pluginapi.Mount{
+				ContainerPath: "/sys/devices/platform/pcap/fpga_manager/fpga0",
+				HostPath:      "/sys/devices/platform/pcap/fpga_manager/fpga0",
+				ReadOnly:      false,
 			}
-			deviceSpecs = append(deviceSpecs, deviceSpec)
+			deviceMounts = append(deviceMounts, deviceMount)
 		}
 
 		response := pluginapi.ContainerAllocateResponse{
-			Devices: deviceSpecs,
+			Mounts: deviceMounts,
 		}
 
 		responses.ContainerResponses = append(responses.ContainerResponses, &response)
